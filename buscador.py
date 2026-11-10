@@ -12,12 +12,12 @@ from paddleocr import PaddleOCR
 BUSQUEDA_INICIAL = "hippie"
 
 TERMINOS_OCR = [
-    ""
+    "Huautla"
 ]
 
-# Opciones:
-# "agn"    -> OCR incluido en el PDF
-# "paddle" -> OCR nuevo usando PaddleOCR
+# pot:
+# "agn"    
+# "paddle"
 OCR_MODE = "agn"
 
 RESULTADOS_POR_PAGINA = 100
