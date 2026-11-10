@@ -1,30 +1,31 @@
-import os, re, csv, json, requests, fitz
+import os, re, csv, json, fitz, requests
+import numpy as np
+
 from pathlib import Path
+from pdf2image import convert_from_path
+from paddleocr import PaddleOCR
 
 # =====================================================
 # CONFIGURACIÓN
 # =====================================================
 
-BUSQUEDA_INICIAL = "Huautla de Jimenez"
+BUSQUEDA_INICIAL = "hippie"
 
 TERMINOS_OCR = [
-    "Fernando Macias",
-    "hippie",
-    "hippies"
+    ""
 ]
 
 # Opciones:
-# "agn"
-# "paddle"
-
-OCR_MODE = "paddle"
+# "agn"    -> OCR incluido en el PDF
+# "paddle" -> OCR nuevo usando PaddleOCR
+OCR_MODE = "agn"
 
 RESULTADOS_POR_PAGINA = 100
 
 CARPETA_SALIDA = "resultados_agn"
 
 # =====================================================
-# INICIALIZAR OCR
+# OCR
 # =====================================================
 
 ocr_engine = None
@@ -32,124 +33,147 @@ ocr_engine = None
 if OCR_MODE == "paddle":
 
     print("Inicializando PaddleOCR...")
-    from pdf2image import convert_from_path
-    from paddleocr import PaddleOCR
+
     ocr_engine = PaddleOCR(
-        lang="es"
+        lang="es",
+        use_doc_orientation_classify=False,
+        use_doc_unwarping=False,
+        use_textline_orientation=False
     )
 
 # =====================================================
-# UTILIDADES
+# DESCARGA PDF
 # =====================================================
 
 def descargar_pdf(id_ficha, destino):
+
     url = (
         f"https://repositorio.agn.gob.mx/"
         f"api/resources/ficha/{id_ficha}"
     )
-    try:
-        response = requests.get(
-            url,
-            timeout=120
-        )
-        response.raise_for_status()
-        with open(destino, "wb") as f:
-            f.write(response.content)
-        return True
-    except Exception as e:
-        print(
-            f"Error descargando "
-            f"{id_ficha}: {e}"
-        )
-        return False
 
+    response = requests.get(
+        url,
+        timeout=120
+    )
+
+    response.raise_for_status()
+
+    with open(destino, "wb") as f:
+        f.write(response.content)
 
 # =====================================================
 # OCR AGN
 # =====================================================
 
 def extraer_texto_agn(pdf_path):
-    texto = ""
-    try:
-        with fitz.open(pdf_path) as pdf:
-            for pagina in pdf:
-                texto += pagina.get_text()
-    except Exception as e:
-        print(
-            f"Error OCR AGN: {e}"
-        )
-    return texto
 
+    texto = ""
+
+    with fitz.open(pdf_path) as pdf:
+
+        for pagina in pdf:
+
+            texto += pagina.get_text()
+            texto += "\n"
+
+    return texto
 
 # =====================================================
 # OCR PADDLE
 # =====================================================
 
 def extraer_texto_paddle(pdf_path):
+
     texto = ""
-    try:
-        paginas = convert_from_path(
-            pdf_path,
-            dpi=300
+
+    paginas = convert_from_path(
+        pdf_path,
+        dpi=300
+    )
+
+    total = len(paginas)
+
+    for indice, pagina in enumerate(paginas):
+
+        print(
+            f"   OCR página "
+            f"{indice + 1}/{total}"
         )
-        for pagina in paginas:
+
+        imagen = np.array(pagina)
+
+        try:
+
             resultado = ocr_engine.predict(
-                pagina
+                imagen
             )
+
             if not resultado:
                 continue
-            for bloque in resultado:
-                if (
-                    isinstance(bloque, dict)
-                    and "rec_texts" in bloque
-                ):
-                    texto += "\n".join(
-                        bloque["rec_texts"]
+
+            for item in resultado:
+
+                if isinstance(item, dict):
+
+                    textos = item.get(
+                        "rec_texts",
+                        []
                     )
-                    texto += "\n"
 
-    except Exception as e:
-        print(
-            f"Error OCR Paddle: {e}"
-        )
+                    if textos:
+
+                        texto += "\n".join(
+                            textos
+                        )
+
+                        texto += "\n"
+
+        except Exception as e:
+
+            print(
+                f"Error OCR Paddle: {e}"
+            )
+
     return texto
-
 
 # =====================================================
 # OCR UNIFICADO
 # =====================================================
 
 def extraer_texto(pdf_path):
+
     if OCR_MODE == "agn":
         return extraer_texto_agn(
             pdf_path
         )
-    if OCR_MODE == "paddle":
-        return extraer_texto_paddle(
-            pdf_path
-        )
-    raise ValueError(
-        "OCR_MODE inválido"
+
+    return extraer_texto_paddle(
+        pdf_path
     )
 
-
 # =====================================================
-# BÚSQUEDA LOCAL
+# BÚSQUEDA DE TÉRMINOS
 # =====================================================
 
 def buscar_terminos(
     texto,
     terminos
 ):
+
     encontrados = []
+
     texto_lower = texto.lower()
+
     for termino in terminos:
+
         if termino.lower() in texto_lower:
+
             encontrados.append(
                 termino
             )
-    return encontrados
 
+    return encontrados
 
 # =====================================================
 # CONTEXTOS
@@ -162,65 +186,74 @@ def extraer_contextos(
 ):
 
     contextos = []
+
     patron = re.compile(
         re.escape(termino),
         re.IGNORECASE
     )
+
     for match in patron.finditer(
         texto
     ):
+
         inicio = max(
             0,
             match.start() - ventana
         )
+
         fin = min(
             len(texto),
             match.end() + ventana
         )
+
         fragmento = texto[
             inicio:fin
         ]
+
         fragmento = fragmento.replace(
             "\n",
             " "
         )
+
         contextos.append(
             fragmento
         )
+
     return contextos
 
-
 # =====================================================
-# CONSULTAR API
+# BÚSQUEDA EN API AGN
 # =====================================================
 
-def obtener_resultados_busqueda():
-    pagina = 1
+def obtener_fichas():
+
     resultados = []
+
+    pagina = 1
+
     while True:
+
         print(
             f"Consultando página "
             f"{pagina}"
         )
-        url = (
-            "https://repositorio.agn.gob.mx/"
-            "api/search"
-        )
-        params = {
-            "_clases": "FI",
-            "_limit": RESULTADOS_POR_PAGINA,
-            "_searchAllWords": BUSQUEDA_INICIAL,
-            "_page": pagina,
-            "_fields": ""
-        }
+
         response = requests.get(
-            url,
-            params=params,
+            "https://repositorio.agn.gob.mx/api/search",
+            params={
+                "_clases": "FI",
+                "_limit": RESULTADOS_POR_PAGINA,
+                "_searchAllWords": BUSQUEDA_INICIAL,
+                "_page": pagina,
+                "_fields": ""
+            },
             timeout=60
         )
 
         response.raise_for_status()
+
         data = response.json()
+
         fichas = data.get(
             "descripcionesDocumentales",
             []
@@ -228,16 +261,14 @@ def obtener_resultados_busqueda():
 
         if not fichas:
             break
+
         resultados.extend(
             fichas
         )
-        print(
-            f"Página {pagina}: "
-            f"{len(fichas)} fichas"
-        )
-        pagina += 1
-    return resultados
 
+        pagina += 1
+
+    return resultados
 
 # =====================================================
 # MAIN
@@ -251,13 +282,13 @@ def main():
         exist_ok=True
     )
 
-    matches_csv = os.path.join(
+    csv_path = os.path.join(
         CARPETA_SALIDA,
         "matches.csv"
     )
 
     with open(
-        matches_csv,
+        csv_path,
         "w",
         newline="",
         encoding="utf-8"
@@ -275,9 +306,7 @@ def main():
             ]
         )
 
-        fichas = (
-            obtener_resultados_busqueda()
-        )
+        fichas = obtener_fichas()
 
         print(
             f"\nTotal fichas: "
@@ -287,7 +316,9 @@ def main():
         for ficha in fichas:
 
             id_ficha = str(
-                ficha["idFicha"]
+                ficha[
+                    "idFicha"
+                ]
             )
 
             titulo = ficha.get(
@@ -296,7 +327,7 @@ def main():
             )
 
             temp_pdf = (
-                f"temp_{id_ficha}.pdf"
+                f"tmp_{id_ficha}.pdf"
             )
 
             try:
@@ -306,17 +337,32 @@ def main():
                     f"{id_ficha}"
                 )
 
-                ok = descargar_pdf(
+                descargar_pdf(
                     id_ficha,
                     temp_pdf
                 )
 
-                if not ok:
-                    continue
-
                 texto = extraer_texto(
                     temp_pdf
                 )
+
+                print(
+                    f"OCR obtenido: "
+                    f"{len(texto)} "
+                    f"caracteres"
+                )
+
+                # guardar OCR para revisión
+                with open(
+                    os.path.join(
+                        CARPETA_SALIDA,
+                        f"{id_ficha}_ocr.txt"
+                    ),
+                    "w",
+                    encoding="utf-8"
+                ) as f:
+
+                    f.write(texto)
 
                 encontrados = (
                     buscar_terminos(
@@ -327,17 +373,17 @@ def main():
 
                 if not encontrados:
 
-                    os.remove(
-                        temp_pdf
-                    )
-
                     print(
                         "Sin coincidencias"
                     )
 
+                    os.remove(
+                        temp_pdf
+                    )
+
                     continue
 
-                pdf_final = (
+                pdf_destino = (
                     os.path.join(
                         CARPETA_SALIDA,
                         f"{id_ficha}.pdf"
@@ -346,16 +392,12 @@ def main():
 
                 os.replace(
                     temp_pdf,
-                    pdf_final
+                    pdf_destino
                 )
 
                 metadata = (
                     ficha.copy()
                 )
-
-                metadata[
-                    "ocr_mode"
-                ] = OCR_MODE
 
                 metadata[
                     "archivo_pdf"
@@ -364,12 +406,24 @@ def main():
                 )
 
                 metadata[
+                    "ocr_mode"
+                ] = OCR_MODE
+
+                metadata[
                     "terminos_encontrados"
                 ] = encontrados
 
                 contextos = {}
 
                 for termino in encontrados:
+
+                    writer.writerow(
+                        [
+                            id_ficha,
+                            titulo,
+                            termino
+                        ]
+                    )
 
                     contextos[
                         termino
@@ -380,27 +434,15 @@ def main():
                         )
                     )
 
-                    writer.writerow(
-                        [
-                            id_ficha,
-                            titulo,
-                            termino
-                        ]
-                    )
-
                 metadata[
                     "contextos"
                 ] = contextos
 
-                metadata_path = (
+                with open(
                     os.path.join(
                         CARPETA_SALIDA,
                         f"{id_ficha}.json"
-                    )
-                )
-
-                with open(
-                    metadata_path,
+                    ),
                     "w",
                     encoding="utf-8"
                 ) as f:
@@ -413,8 +455,8 @@ def main():
                     )
 
                 print(
-                    "MATCH -> "
-                    + ", ".join(
+                    "MATCH:",
+                    ", ".join(
                         encontrados
                     )
                 )
@@ -422,7 +464,7 @@ def main():
             except Exception as e:
 
                 print(
-                    f"Error en "
+                    f"ERROR "
                     f"{id_ficha}: {e}"
                 )
 
@@ -439,9 +481,8 @@ def main():
                         pass
 
     print(
-        "\nProceso finalizado."
+        "\nProceso terminado."
     )
-
 
 if __name__ == "__main__":
     main()
