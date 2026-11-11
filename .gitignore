@@ -1,5 +1,6 @@
 resultados/
 .venv/
+.venv_linux/
 venv/
 env/
 __pycache__/
